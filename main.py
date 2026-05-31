@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from agents.orchestrator import orchestrate
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -39,8 +41,10 @@ async def run_review(
     diff_url: str,
 ) -> None:
     """Run the full PR review pipeline for a single pull request."""
-    # TODO: fetch diff, run specialist agents, post review to GitHub
-    pass
+    try:
+        await orchestrate(repo, pr_number, head_sha, diff_url)
+    except Exception as exc:
+        print(f"[run_review] Error reviewing {repo}#{pr_number}: {exc}")
 
 
 # ---------------------------------------------------------------------------
