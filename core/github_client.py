@@ -74,8 +74,9 @@ class GithubClient:
             pr_number: Pull request number.
             commit_sha: HEAD commit SHA to attach the review to.
             summary: Top-level review body (markdown supported).
-            findings: List of dicts with keys ``filename``, ``line``, ``message``,
-                and ``severity``. Entries without a valid line are skipped.
+            findings: List of dicts with keys ``filename``, ``line``, ``severity``,
+                ``category``, ``title``, ``explanation``, and ``fix``. Entries
+                without a valid line are skipped.
             verdict: Review event — ``APPROVE``, ``REQUEST_CHANGES``, or ``COMMENT``.
 
         Returns:
@@ -86,8 +87,9 @@ class GithubClient:
         try:
             repo = self.gh.get_repo(repo_name)
             pr = repo.get_pull(pr_number)
+            commit = repo.get_commit(commit_sha)
             pr.create_review(
-                commit=commit_sha,
+                commit=commit,
                 body=summary,
                 event=verdict,
                 comments=inline_comments,
@@ -97,7 +99,9 @@ class GithubClient:
             print(f"[GithubClient] Failed to post review on {repo_name}#{pr_number}: {exc}")
             return False
         except Exception as exc:
-            print(f"[GithubClient] Unexpected error posting review: {exc}")
+            import traceback
+
+            print(f"[GithubClient] Full error: {traceback.format_exc()}")
             return False
 
     def get_pr_info(self, repo_name: str, pr_number: int) -> dict:
@@ -150,17 +154,27 @@ class GithubClient:
                 continue
 
             filename = finding.get("filename")
-            message = finding.get("message", "")
-            severity = str(finding.get("severity", "INFO")).upper()
+            severity = str(finding.get("severity", "info")).upper()
+            category = finding.get("category", "General")
+            title = finding.get("title", "Issue")
+            explanation = finding.get("explanation", "")
+            fix = finding.get("fix", "")
 
             if not filename:
                 continue
+
+            body = (
+                f"**{severity} — {category}**\n\n"
+                f"**{title}**\n\n"
+                f"{explanation}\n\n"
+                f"**Suggested fix:**\n```python\n{fix}\n```"
+            )
 
             inline_comments.append(
                 {
                     "path": filename,
                     "line": int(line),
-                    "body": f"[{severity}] {message}",
+                    "body": body,
                 }
             )
 

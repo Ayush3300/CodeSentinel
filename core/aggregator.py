@@ -4,6 +4,13 @@ Merge and rank findings from all specialist review agents.
 
 from __future__ import annotations
 
+import os
+import re
+
+import requests
+
+from prompts.review_prompt import summary_prompt
+
 # Higher index = higher priority when deduplicating
 _SEVERITY_RANK = {
     "suggestion": 0,
@@ -13,6 +20,36 @@ _SEVERITY_RANK = {
 
 # Sort order for final output (critical first)
 _SORT_ORDER = {"critical": 0, "warning": 1, "suggestion": 2}
+
+# Optional markdown fences around LLM summary output
+_FENCE_RE = re.compile(r"^```(?:markdown)?\s*\n?", re.IGNORECASE)
+_TRAILING_FENCE_RE = re.compile(r"\n?```\s*$")
+
+
+def call_groq(prompt: str) -> str:
+    """Call Groq chat completions API (same pattern as specialist agents)."""
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+        },
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Remove optional code fences from LLM markdown output."""
+    cleaned = text.strip()
+    cleaned = _FENCE_RE.sub("", cleaned)
+    cleaned = _TRAILING_FENCE_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def aggregate(
@@ -71,31 +108,40 @@ def aggregate(
 
 def format_summary(aggregated: dict) -> str:
     """
-    Build a short human-readable summary line for the PR review.
+    Build a markdown PR review summary via Groq and :func:`summary_prompt`.
 
     Args:
         aggregated: Result dict from :func:`aggregate`.
 
     Returns:
-        Plain-text summary suitable for logs or a review body prefix.
+        Markdown summary string for the GitHub review body.
     """
-    total = aggregated.get("total", 0)
-    critical = aggregated.get("critical_count", 0)
-    warnings = aggregated.get("warning_count", 0)
-    suggestions = aggregated.get("suggestion_count", 0)
-    verdict = aggregated.get("verdict", "APPROVE")
+    all_findings = aggregated.get("findings", [])
 
-    summary = (
-        f"PR Review Complete — {total} issues found "
-        f"({critical} critical, {warnings} warnings, {suggestions} suggestions)"
-    )
+    if not all_findings:
+        return (
+            "## PR Review Summary\n\n"
+            "No issues found. The PR looks clean and ready to merge."
+        )
 
-    if verdict == "APPROVE":
-        summary += ". No major issues found. Looks good to merge."
-    elif verdict == "REQUEST_CHANGES":
-        summary += ". Critical issues must be fixed before merging."
-
-    return summary
+    try:
+        prompt = summary_prompt(all_findings)
+        raw = call_groq(prompt)
+        return _strip_markdown_fences(raw)
+    except Exception as exc:
+        print(f"[aggregator] Failed to generate summary via Groq: {exc}")
+        total = aggregated.get("total", 0)
+        critical = aggregated.get("critical_count", 0)
+        warnings = aggregated.get("warning_count", 0)
+        suggestions = aggregated.get("suggestion_count", 0)
+        return (
+            f"## PR Review Summary\n\n"
+            f"Found {total} issue(s) across the changed files.\n\n"
+            f"### Breakdown\n"
+            f"- Critical: {critical}\n"
+            f"- Major: {warnings}\n"
+            f"- Minor: {suggestions}\n"
+        )
 
 
 def _normalize_severity(severity: str | None) -> str:
@@ -149,14 +195,14 @@ def _decide_verdict(findings: list[dict]) -> str:
     """
     Map combined findings to a GitHub review event.
 
-    - Any critical → REQUEST_CHANGES
+    - Any critical → COMMENT
     - Any warning (and no critical) → COMMENT
     - Otherwise → APPROVE
     """
     severities = {_normalize_severity(f.get("severity")) for f in findings}
 
     if "critical" in severities:
-        return "REQUEST_CHANGES"
+        return "COMMENT"
     if "warning" in severities:
         return "COMMENT"
     return "APPROVE"
