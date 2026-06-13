@@ -1,4 +1,4 @@
-# Autonomous PR Review Agent
+# CodeSentinel
 > An AI agent that reviews your Pull Requests like a senior engineer - in under 30 seconds.
 
 Built with **Gemini API**, **FastAPI**, **LangGraph**, and **GitHub Actions**. Catches bugs, security issues, and missing tests by running parallel specialist agents on every PR diff.
